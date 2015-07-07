@@ -1,10 +1,16 @@
 package org.venth.contest.duplicates;
 
+import com.google.common.base.Stopwatch;
+
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -17,6 +23,7 @@ import static org.hamcrest.Matchers.is;
  * @author Venth on 06/07/2015
  */
 public class WithoutDuplicatesTest {
+    private static final Logger LOG = LoggerFactory.getLogger(WithoutDuplicates.class);
 
     @Test
     public void empty_collection_contains_none_duplicates() {
@@ -97,6 +104,55 @@ public class WithoutDuplicatesTest {
         //then Neo, Oracle and one Mr Smith remained
         assertThat(changedMatrix, contains(neo, oracle, mrSmith));
     }
+
+    @Test
+    public void big_overflow_of_duplicates_is_managed() {
+        //given Neo, Oracle, 50 000 000 x Mr Smith, 40 000 000 x unique matrix people
+        Neo neo = new Neo();
+        Oracle oracle = new Oracle();
+
+        Stream<Person> neos = Stream.of(neo);
+        Stream<Person> oracles = Stream.of(oracle);
+        long mrSmithsInMatrix = 50000000;
+        Stream<Person> mrSmiths = Stream.<Person>generate(MrSmith::new).limit(mrSmithsInMatrix);
+        long uniqueMatrixPeopleSize = 40000000;
+        Stream<Person> matrixPeople = Stream.<Person>generate(MatrixPerson::new).limit(uniqueMatrixPeopleSize);
+
+        Stream<Person> matrix = Stream.concat(neos, matrixPeople);
+        matrix = Stream.concat(matrix, mrSmiths);
+        matrix = Stream.concat(matrix, oracles);
+
+        long wholeMatrixSize = mrSmithsInMatrix + 1 + 1 + uniqueMatrixPeopleSize;
+
+        //when duplicates are removed from the matrix
+        AtomicLong size = new AtomicLong(0);
+        Stream<Person> changedMatrix = WithoutDuplicates.applyOn(matrix.parallel().unordered())
+                .map(person -> {
+                    long processed = size.incrementAndGet();
+                    if (processed % 100000 == 0) {
+                        LOG.debug("Processed records: {}", processed);
+                    }
+                    return person;
+                });
+
+        //and all unique matrix people remained along with Neo, Oracle and one Smith
+        long actualMatrixSize;
+        Stopwatch stopwatch = Stopwatch.createStarted();
+        try {
+            actualMatrixSize = changedMatrix.count();
+            assertThat(actualMatrixSize, is(uniqueMatrixPeopleSize + 1l + 1l + 1l));
+        } finally {
+            stopwatch.stop();
+        }
+
+        LOG.debug(
+                "Processing time: {} in seconds; Eliminated duplicates: {}; collection without duplicates size: {}, whole collection size: {}",
+                stopwatch.elapsed(TimeUnit.SECONDS),
+                wholeMatrixSize - actualMatrixSize,
+                actualMatrixSize,
+                wholeMatrixSize
+        );
+    }
 }
 
 class Neo extends Person {
@@ -114,5 +170,12 @@ class MrSmith extends Person {
 class Oracle extends Person {
     public Oracle() {
         super("Oracle", 0);
+    }
+}
+
+class MatrixPerson extends Person {
+    private static AtomicLong NO = new AtomicLong(0);
+    public MatrixPerson() {
+        super("Person No: " + NO.addAndGet(1), 30);
     }
 }
